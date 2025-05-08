@@ -1,0 +1,686 @@
+```dart
+// Required dependencies:
+// google_maps_flutter: ^2.5.3  (or latest)
+// http: ^1.2.0             (or latest)
+// location: ^5.0.3          (or latest)
+// permission_handler: ^11.3.0 (or latest)
+// fluttertoast: ^8.2.4       (or latest)
+// shared_preferences: ^2.2.2 (or latest)
+// vector_math: ^2.1.4       (or latest) - For distance calculation if needed, though location package might suffice
+// flutter_launcher_icons: ^0.13.1 (or similar, for custom marker icon setup) - Optional but needed for R.drawable.bus equivalent
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:math'; // For Point and interpolation math
+import 'dart:ui' as ui; // For image loading for markers
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'; // For rootBundle
+import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:http/http.dart' as http;
+import 'package:location/location.dart' as loc;
+import 'package:permission_handler/permission_handler.dart';
+import 'package:fluttertoast/fluttertoast.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+// Note: Android's PendingIntent and ProximityAlert system don't have direct Flutter equivalents.
+// Proximity detection will be handled manually by checking distance on location updates.
+// Note: Android's Volley is replaced by Dart's http package.
+// Note: Android's ProgressDialog is replaced by a simple loading indicator.
+// Note: Android's Handler/SystemClock based animation is replicated using Dart's Timer/DateTime.
+// Note: R.id.map is implicit in the GoogleMap widget usage.
+// Note: R.layout.activity_distance is replaced by the Scaffold/Widget structure.
+// Note: R.drawable.bus needs to be an asset in Flutter's pubspec.yaml and loaded.
+
+class DistanceScreen extends StatefulWidget {
+  final String? bus; // Equivalent to getIntent().getStringExtra("bus")
+
+  const DistanceScreen({Key? key, required this.bus}) : super(key: key);
+
+  @override
+  _DistanceScreenState createState() => _DistanceScreenState();
+}
+
+class _DistanceScreenState extends State<DistanceScreen> implements loc.LocationChangeListener { // Mimic interface for clarity
+
+  static const String DATA_URL = "http://192.168.1.20/busproject1/nearme.php?busnumber="; // Ensure this IP is accessible from your device/emulator
+  GoogleMapController? _mMapController; // Equivalent to mMap
+  static const String JSON_ARRAY = "result";
+  static const String KEY_LATITUDE = "Buscurrentlat";
+  static const String KEY_LOGITUDE = "buscurrentlogi";
+  static const String KEY_BUS = "busnumber";
+  bool _isLoading = false; // To control loading indicator visibility
+  double? vc; // Bus latitude
+  String? name; // Bus number from server
+  double? address; // Bus longitude
+  double? lati; // User latitude (from location updates)
+  double? logi; // User longitude (from location updates)
+  String? busno; // Bus number passed via constructor
+  Circle? myCircle; // User location accuracy circle
+  // Handler mHandler = new Handler(); // Replaced by Dart's Timer and async operations
+  SharedPreferences? sp; // For "range" preferences
+  // PendingIntent pendingIntent; // No direct equivalent needed for manual proximity check
+  SharedPreferences? sharedPreferences; // For "location" preferences
+  int locationCount = 0; // From "location" preferences
+  static const double POINT_RADIUS = 100; // in Meters (used double instead of long)
+  static const int PROX_ALERT_EXPIRATION = -1; // It will never expire ( conceptually)
+  static const String PROX_ALERT_INTENT = "com.example.eotrainee.bustracking"; // Used conceptually for proximity logic
+  loc.Location _locationManager = loc.Location(); // Equivalent to LocationManager for getting location updates
+  StreamSubscription<loc.LocationData>? _locationSubscription; // To manage location listener
+  Timer? _periodicTimer; // For periodic data fetching
+
+  Set<Marker> _markers = {};
+  Set<Circle> _circles = {};
+  BitmapDescriptor _busIcon = BitmapDescriptor.defaultMarker; // Default icon
+
+  // For marker bounce animation
+  Marker? _bouncingMarker;
+  Timer? _bounceTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    busno = widget.bus; // Get bus number from widget constructor argument
+
+    _loadBusIcon(); // Load custom marker icon
+    _checkAndRequestPermissions(); // Check permissions first
+
+    // Start periodic data fetching after a short delay to allow map init
+    _periodicTimer = Timer.periodic(const Duration(seconds: 11), (timer) {
+      if (mounted) { // Check if the widget is still in the tree
+         _getRangePreferenceAndGetData();
+      } else {
+        timer.cancel(); // Stop timer if widget is disposed
+      }
+    });
+
+    // Initialize SharedPreferences for "location"
+    _initLocationSharedPreferences();
+
+    // Initial data fetch
+    _getData();
+
+    // Note: The original Java code gets the map synchronously and then sets listeners.
+    // In Flutter, map setup is asynchronous via onMapCreated. Location listening
+    // should ideally start after the map is ready and permissions are granted.
+    // We start permission check early, and location listening in _onMapCreated or after permissions granted.
+  }
+
+  // Helper method to combine preference check and data fetch for the timer
+  Future<void> _getRangePreferenceAndGetData() async {
+     try {
+        sp = await SharedPreferences.getInstance();
+        // Using a different key as "range" might conflict if used elsewhere
+        String sd = sp?.getString("range1") ?? "";
+        /*if(sd == "1"){
+            Fluttertoast.showToast(msg: "Reached"); // Equivalent to Toast
+        }
+        else{
+
+        }*/
+        // Proceed to get data regardless of the commented-out check, as per original logic
+        await _getData();
+     } catch (e) {
+        if (kDebugMode) {
+          print("Error reading SharedPreferences or getting data: $e");
+        }
+        // Handle exception if needed
+     }
+  }
+
+
+  Future<void> _loadBusIcon() async {
+    // Ensure you have 'assets/images/bus.png' and declared it in pubspec.yaml
+    try {
+      final Uint8List markerIconBytes = await _getBytesFromAsset('assets/images/bus.png', 100); // Adjust size as needed
+      _busIcon = BitmapDescriptor.fromBytes(markerIconBytes);
+    } catch (e) {
+      if (kDebugMode) {
+        print("Error loading bus icon: $e. Using default marker.");
+      }
+      _busIcon = BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue); // Fallback
+    }
+  }
+
+  // Helper to load and resize asset images for markers
+  Future<Uint8List> _getBytesFromAsset(String path, int width) async {
+    ByteData data = await rootBundle.load(path);
+    ui.Codec codec = await ui.instantiateImageCodec(data.buffer.asUint8List(), targetWidth: width);
+    ui.FrameInfo fi = await codec.getNextFrame();
+    return (await fi.image.toByteData(format: ui.ImageByteFormat.png))!.buffer.asUint8List();
+  }
+
+
+  Future<void> _checkAndRequestPermissions() async {
+    bool serviceEnabled;
+    loc.PermissionStatus permissionGranted;
+
+    serviceEnabled = await _locationManager.serviceEnabled();
+    if (!serviceEnabled) {
+      serviceEnabled = await _locationManager.requestService();
+      if (!serviceEnabled) {
+        Fluttertoast.showToast(msg: "Location services are disabled.");
+        return; // Permissions are useless if service is disabled
+      }
+    }
+
+    permissionGranted = await _locationManager.hasPermission();
+    if (permissionGranted == loc.PermissionStatus.denied) {
+      permissionGranted = await _locationManager.requestPermission();
+      if (permissionGranted != loc.PermissionStatus.granted) {
+         Fluttertoast.showToast(msg: "Location permission denied.");
+         // Handle the case where permission is denied (e.g., show explanation, disable features)
+         // In this translation, we proceed but map features might not work.
+         // The original Java code returns if permission is not granted in onCreate,
+         // but here we continue setup and rely on onMapCreated checks.
+         return;
+      }
+    }
+
+    // If permissions are granted, start listening to location updates
+    // It's often better to start listening after the map is created (_onMapCreated)
+    // but we can start here if needed immediately.
+    _startLocationUpdates();
+  }
+
+  void _startLocationUpdates() async {
+      // Ensure permissions one last time before listening
+      loc.PermissionStatus permissionGranted = await _locationManager.hasPermission();
+      if (permissionGranted == loc.PermissionStatus.granted) {
+          _locationSubscription?.cancel(); // Cancel previous subscription if any
+          _locationSubscription = _locationManager.onLocationChanged.listen((loc.LocationData currentLocation) {
+              if (mounted) {
+                  onMyLocationChange(currentLocation); // Call the handler method
+              }
+          });
+      } else {
+          if (kDebugMode) {
+            print("Location permission not granted. Cannot listen for updates.");
+          }
+      }
+  }
+
+
+  Future<void> _initLocationSharedPreferences() async {
+    // Opening the sharedPreferences object
+    sharedPreferences = await SharedPreferences.getInstance();
+
+    // Getting number of locations already stored
+    locationCount = sharedPreferences?.getInt("locationCount") ?? 0;
+
+    // Getting stored zoom level if exists else return "0"
+    String zoom = sharedPreferences?.getString("zoom") ?? "0";
+    // Note: The 'zoom' variable is read but not used later in the provided Java code.
+  }
+
+
+  @override
+  void dispose() {
+    _periodicTimer?.cancel(); // Stop the timer
+    _locationSubscription?.cancel(); // Stop listening to location updates
+    _mMapController?.dispose(); // Dispose map controller
+    _bounceTimer?.cancel(); // Dispose bounce animation timer
+    super.dispose();
+  }
+
+  // Equivalent to the map ready callback
+  void _onMapCreated(GoogleMapController controller) {
+    _mMapController = controller;
+    // Enable My Location layer after map is created and permissions are likely granted
+    // Note: google_maps_flutter handles enabling the layer automatically if myLocationEnabled is true
+    // and permissions are granted. Explicit permission check might have happened in initState.
+    _startLocationUpdates(); // Start or ensure location updates are running
+  }
+
+  Future<void> _getData() async {
+    String? id = busno;
+    if (id == null || id.isEmpty) {
+      Fluttertoast.showToast(msg: "Please enter an id"); // Equivalent to Toast
+      return;
+    }
+
+    if (mounted) {
+      setState(() {
+        _isLoading = true; // Show loading indicator
+      });
+    }
+
+    // Showing loading indicator - simplified compared to ProgressDialog
+    // You could use showDialog for a modal effect if needed.
+
+    String url = DATA_URL + id.toString();
+    if (kDebugMode) {
+      print("Fetching data from: $url");
+    }
+
+    try {
+      final response = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 10)); // Added timeout
+
+      if (response.statusCode == 200) {
+        if (kDebugMode) {
+          print("Response body: ${response.body}");
+        }
+        // Parse JSON
+        name = ""; // Reset name before parsing
+        try {
+          final jsonObject = jsonDecode(response.body);
+          final result = jsonObject[JSON_ARRAY] as List?; // Use List? for safety
+          if (result != null && result.isNotEmpty) {
+             final collegeData = result[0] as Map<String, dynamic>?; // Use Map?
+             if (collegeData != null) {
+                 // Use double.tryParse for safer parsing, provide default if null
+                 vc = collegeData[KEY_LATITUDE] is String
+                    ? double.tryParse(collegeData[KEY_LATITUDE])
+                    : (collegeData[KEY_LATITUDE] as num?)?.toDouble();
+
+                 address = collegeData[KEY_LOGITUDE] is String
+                    ? double.tryParse(collegeData[KEY_LOGITUDE])
+                    : (collegeData[KEY_LOGITUDE] as num?)?.toDouble();
+
+                 name = collegeData[KEY_BUS]?.toString(); // Get bus number as string
+
+                 if (vc == null || address == null) {
+                    throw const FormatException("Latitude or Longitude is null or invalid");
+                 }
+
+                 if (kDebugMode) {
+                   print("Parsed Data - Lat: $vc, Lng: $address, Bus: $name");
+                 }
+
+                 _initMapElements(vc!, address!); // Update map markers/circles
+                 _checkProximity(); // Check proximity after getting new bus location
+
+             } else {
+                throw const FormatException("College data object is null");
+             }
+          } else {
+             throw const FormatException("Result array is null or empty");
+          }
+        } catch (e) {
+          if (kDebugMode) {
+            print("JSON Parsing Error: $e");
+          }
+          Fluttertoast.showToast(msg: "Error parsing server response: $e");
+        }
+      } else {
+        if (kDebugMode) {
+          print("Server Error: ${response.statusCode}");
+        }
+        Fluttertoast.showToast(msg: "Server Error: ${response.statusCode}");
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print("Network Error: $e");
+      }
+      Fluttertoast.showToast(msg: "Network Error: ${e.toString()}");
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false; // Hide loading indicator
+        });
+      }
+    }
+  }
+
+  // Replaces the init method in Java, updates map elements
+  void _initMapElements(double busLat, double busLng) {
+     final LatLng busLatLng = LatLng(busLat, busLng);
+
+     // Clear previous bus marker and circle before adding new ones
+     // Alternatively, update existing ones if performance is critical
+     _markers.removeWhere((m) => m.markerId.value == 'bus_marker');
+     _circles.removeWhere((c) => c.circleId.value == 'bus_proximity_circle');
+     _circles.removeWhere((c) => c.circleId.value == 'bus_fill_circle'); // Remove old fill circle if separate
+
+     final Marker busMarker = Marker(
+       markerId: const MarkerId('bus_marker'),
+       position: busLatLng,
+       infoWindow: InfoWindow(title: name ?? 'Bus Location', snippet: busLatLng.toString()),
+       icon: _busIcon, // Use loaded custom icon
+       onTap: () {
+         _handleMarkerTap(const MarkerId('bus_marker'));
+       }
+     );
+
+     // Circle for proximity visualization (stroke)
+     final Circle busProximityCircle = Circle(
+       circleId: const CircleId('bus_proximity_circle'),
+       center: busLatLng,
+       radius: POINT_RADIUS, // Use the defined radius
+       strokeWidth: 2,
+       strokeColor: Colors.black,
+       fillColor: Colors.transparent, // Stroke only
+     );
+
+     // Optional: Separate fill circle as in original code (0x30ff0000)
+     final Circle busFillCircle = Circle(
+       circleId: const CircleId('bus_fill_circle'),
+       center: busLatLng,
+       radius: 200, // Original Java code used 200 radius for fill
+       strokeWidth: 0, // No stroke for fill circle
+       fillColor: const Color(0x30FF0000), // Red with transparency
+     );
+
+
+     if (mounted) {
+       setState(() {
+         _markers.add(busMarker);
+         _circles.add(busProximityCircle);
+         _circles.add(busFillCircle); // Add the fill circle
+       });
+     }
+
+     // Move camera to the bus location initially or on update
+     _mMapController?.animateCamera(CameraUpdate.newLatLngZoom(busLatLng, 15.0)); // Zoom level 15 is arbitrary
+
+     // The proximity alert setup from Java is replaced by manual checks
+     // in onMyLocationChange -> _checkProximity
+     // Toast.makeText(getBaseContext(), "Proximity Alert is added", Toast.LENGTH_SHORT).show();
+     // This toast seems misplaced in the original Java; the alert *check* happens on location change.
+     // We will show a toast in _checkProximity when the user *is* within range.
+
+     // Commented out SharedPreferences logic from Java's init/addProximityAlert:
+     /*
+        // This intent will call the activity ProximityActivity
+        Intent proximityIntent = new Intent( Distance.this,ProximityActivity.class );
+
+        // Creating a pending intent which will be invoked by LocationManager when the specified region is
+        // entered or exited
+        pendingIntent = PendingIntent.getActivity( getBaseContext(), 0, proximityIntent, Intent.FLAG_ACTIVITY_NEW_TASK );
+
+        // Setting proximity alert
+        // The pending intent will be invoked when the device enters or exits the region 20 meters
+        // away from the marked point
+        // The -1 indicates that, the monitor will not be expired
+        if (ActivityCompat.checkSelfPermission( this, Manifest.permission.ACCESS_FINE_LOCATION ) != PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission( this, Manifest.permission.ACCESS_COARSE_LOCATION ) != PackageManager.PERMISSION_GRANTED) {
+            // ... permission check ...
+            return;
+        }
+        locationManager.addProximityAlert( vc, address, 100, -1, pendingIntent );
+
+        // Opening the editor object to write data to sharedPreferences
+        SharedPreferences.Editor editor = sharedPreferences.edit();
+
+        // Storing the latitude of the current location to the shared preferences
+        editor.putString("lat", Double.toString(vc));
+
+        // Storing the longitude of the current location to the shared preferences
+        editor.putString("lng", Double.toString(address));
+
+        // Storing the zoom level to the shared preferences
+        editor.putString("zoom",  Double.toString(address)); // Seems incorrect, should likely be zoom level
+
+        // Saving the values stored in the shared preferences
+        editor.commit();
+     */
+  }
+
+  // Equivalent to onMyLocationChange
+  @override
+  void onMyLocationChange(loc.LocationData location) {
+    if (!mounted) return;
+
+    lati = location.latitude;
+    logi = location.longitude;
+    if (lati == null || logi == null) return;
+
+    final LatLng locLatLng = LatLng(lati!, logi!);
+    double accuracy = location.accuracy ?? 50.0; // Default accuracy if null
+
+    // Update or add the user's accuracy circle
+    _updateUserCircle(locLatLng, accuracy);
+
+    // Optional: Animate camera to user's location only once or periodically
+    // mMap.animateCamera(CameraUpdateFactory.newLatLng(locLatLng)); // Original behavior
+
+    // Check proximity whenever the user's location changes
+    _checkProximity();
+  }
+
+  void _updateUserCircle(LatLng center, double accuracy) {
+      // Remove the old circle first
+      _circles.removeWhere((circle) => circle.circleId.value == 'user_accuracy_circle');
+
+      // Add the new circle
+      final Circle userCircle = Circle(
+          circleId: const CircleId('user_accuracy_circle'),
+          center: center,
+          radius: accuracy,
+          fillColor: Colors.blue.withOpacity(0.2), // Similar to original fill
+          strokeColor: Colors.blue, // Similar to original stroke
+          strokeWidth: 1,
+      );
+
+      if (mounted) {
+          setState(() {
+              _circles.add(userCircle);
+          });
+      }
+  }
+
+
+  // Manual proximity check logic
+  void _checkProximity() {
+    if (vc != null && address != null && lati != null && logi != null) {
+      double distanceInMeters = _calculateDistance(lati!, logi!, vc!, address!);
+
+      if (distanceInMeters <= POINT_RADIUS) {
+        // User is inside the proximity radius
+        // The original Java code registers a BroadcastReceiver (ProximityIntentReceiver)
+        // which is not provided. We simulate the likely action (e.g., showing a toast).
+        // The "Alert Added" toast in the original addProximityAlert seems like debug code.
+        // A more appropriate message would be "Entered proximity zone" or similar.
+        Fluttertoast.showToast(
+            msg: "Entered Bus Proximity Zone!",
+            toastLength: Toast.LENGTH_LONG
+        );
+        // Here you would trigger whatever action ProximityIntentReceiver was supposed to do.
+        // e.g., update UI, show notification, etc.
+
+        // Also check the "range1" preference like in the timer callback's commented code
+         _checkRangePreferenceOnProximity();
+
+      } else {
+         // User is outside the radius (optional: add logic if needed for exiting the zone)
+      }
+    }
+  }
+
+  // Helper to check range preference when proximity is met
+  Future<void> _checkRangePreferenceOnProximity() async {
+      try {
+          sp = await SharedPreferences.getInstance();
+          String sd = sp?.getString("range1") ?? "";
+          if(sd == "1"){
+              Fluttertoast.showToast(msg: "Reached (Proximity Check)"); // Indicate source
+          }
+      } catch (e) {
+          if (kDebugMode) {
+            print("Error reading SharedPreferences in proximity check: $e");
+          }
+      }
+  }
+
+
+  // Calculate distance between two lat/lng points in meters (Haversine formula)
+  double _calculateDistance(double lat1, double lon1, double lat2, double lon2) {
+    var p = 0.017453292519943295; // Math.PI / 180
+    var c = cos;
+    var a = 0.5 - c((lat2 - lat1) * p)/2 +
+          c(lat1 * p) * c(lat2 * p) *
+          (1 - c((lon2 - lon1) * p))/2;
+    return 12742 * asin(sqrt(a)) * 1000; // 2 * R; R = 6371 km. Result in meters
+  }
+
+
+  // Equivalent to onMarkerClick (using Marker's onTap)
+  void _handleMarkerTap(MarkerId markerId) {
+      // Find the marker that was tapped
+      final Marker? tappedMarker = _markers.firstWhere(
+          (marker) => marker.markerId == markerId,
+          // orElse: () => null // This line causes type mismatch, handle null below
+      );
+
+      if (tappedMarker == null) return; // Should not happen if called from onTap
+
+      // If another animation is running, cancel it
+      _bounceTimer?.cancel();
+      // If a marker was previously bouncing, reset its position (optional)
+      if (_bouncingMarker != null && _bouncingMarker != tappedMarker) {
+         // Find original position if stored, or just leave it
+      }
+
+      _bouncingMarker = tappedMarker;
+      _startBounceAnimation(tappedMarker);
+
+      // In Flutter, returning true/false isn't needed for marker tap consumption
+      // The onTap callback itself handles the event.
+  }
+
+  void _startBounceAnimation(Marker marker) {
+      final LatLng markerLatLng = marker.position;
+      // Projection equivalent is harder without map context readily available here.
+      // We'll simulate the visual effect by animating the marker's y-offset conceptually.
+      // A simpler way in Flutter is often using an AnimatedWidget or stateful marker icon.
+      // Here, we replicate the Java logic closely using a timer.
+
+      final DateTime startTime = DateTime.now();
+      const Duration duration = Duration(milliseconds: 2000);
+      final double startYoffset = 0.0; // Represents the initial 'up' position conceptually
+      final double endYoffset = -20.0; // Peak bounce height (adjust as needed)
+
+      // BounceInterpolator logic (approximation)
+      // f(t) = -pow(e, -t / a) * cos(t * b) + 1
+      // We need a Dart equivalent or a simpler bounce simulation.
+      // Let's use a simplified sine wave for bounce effect.
+      const double bounceHeight = 30.0; // How high the marker bounces visually (adjust)
+
+      _bounceTimer = Timer.periodic(const Duration(milliseconds: 16), (timer) {
+          final long elapsed = DateTime.now().difference(startTime).inMilliseconds;
+          double t = elapsed / duration.inMilliseconds;
+          t = t > 1.0 ? 1.0 : t; // Clamp t to [0, 1]
+
+          // Simple bounce simulation using sine wave decay
+          // Adjust frequency and decay for desired effect
+          final double frequency = 3.0; // How many bounces
+          final double decay = 5.0; // How quickly bounce dampens
+          final double bounce = bounceHeight * (1 - t) * pow(e, -decay * t) * sin(2 * pi * frequency * t);
+
+          // Update marker position - In google_maps_flutter, we can't easily set screen offset.
+          // A common workaround is to slightly adjust LatLng or use a custom info window/overlay.
+          // For this direct translation, we'll update the marker state with a new position
+          // slightly offset vertically. This isn't perfect projection but mimics the visual.
+          // Note: This vertical offset calculation is approximate.
+          final double latOffset = bounce * 0.00001; // Small latitude change for visual offset
+
+          final LatLng newPosition = LatLng(markerLatLng.latitude + latOffset, markerLatLng.longitude);
+
+          // Update the marker in the state set
+          final Marker updatedMarker = marker.copyWith(positionParam: newPosition);
+          if (mounted) {
+              setState(() {
+                  _markers.removeWhere((m) => m.markerId == marker.markerId);
+                  _markers.add(updatedMarker);
+                  _bouncingMarker = updatedMarker; // Keep track of the updated marker instance
+              });
+          }
+
+
+          if (t >= 1.0) {
+              timer.cancel();
+              _bounceTimer = null;
+              // Reset marker to original position after animation
+              final Marker finalMarker = marker.copyWith(positionParam: markerLatLng);
+               if (mounted) {
+                  setState(() {
+                      _markers.removeWhere((m) => m.markerId == marker.markerId);
+                      _markers.add(finalMarker);
+                      _bouncingMarker = null;
+                  });
+               }
+          }
+      });
+  }
+
+
+  // Original addProximityAlert logic is now integrated into _checkProximity
+  // The registration of ProximityIntentReceiver is not needed as we check manually.
+  /*
+  private void addProximityAlert() {
+      Intent intent = new Intent( PROX_ALERT_INTENT );
+      PendingIntent proximityIntent = PendingIntent.getBroadcast( this, 0, intent, 0 );
+      // ... permission checks ...
+      locationManager.addProximityAlert(
+              vc, // latitude
+              address, // longitude
+              POINT_RADIUS, // radius
+              PROX_ALERT_EXPIRATION, // expiration
+              proximityIntent // intent
+      );
+
+      IntentFilter filter = new IntentFilter(PROX_ALERT_INTENT);
+      registerReceiver(new ProximityIntentReceiver(), filter); // Receiver not provided
+      Toast.makeText(getApplicationContext(),"Alert Added",Toast.LENGTH_SHORT).show(); // Toast moved to _checkProximity
+  }
+  */
+
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Bus Tracker'),
+      ),
+      body: Stack(
+        children: [
+          GoogleMap(
+            onMapCreated: _onMapCreated,
+            initialCameraPosition: const CameraPosition(
+              target: LatLng(13.0827, 80.2707), // Default to Chennai, adjust as needed
+              zoom: 12.0,
+            ),
+            myLocationEnabled: true, // Show user's location blue dot
+            myLocationButtonEnabled: true, // Show button to center on user
+            markers: _markers,
+            circles: _circles,
+            onTap: (LatLng position) {
+              // Optional: Handle map taps if needed (e.g., clear bounce animation)
+              if (_bounceTimer != null && _bouncingMarker != null) {
+                 _bounceTimer?.cancel();
+                 // Reset marker to original position
+                 final Marker finalMarker = _bouncingMarker!.copyWith(positionParam: _bouncingMarker!.position);
+                 if (mounted) {
+                    setState(() {
+                       _markers.removeWhere((m) => m.markerId == _bouncingMarker!.markerId);
+                       _markers.add(finalMarker);
+                       _bouncingMarker = null;
+                    });
+                 }
+              }
+            },
+            // zoomControlsEnabled: true, // Optional: Show zoom controls
+          ),
+          if (_isLoading)
+            Container(
+              color: Colors.black.withOpacity(0.5), // Dim background
+              child: const Center(
+                child: CircularProgressIndicator(),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// Interface definition for LocationChangeListener (Dart doesn't have explicit interfaces like Java)
+// This is just for conceptual mapping to the original Java code structure.
+abstract class LocationChangeListener {
+  void onMyLocationChange(loc.LocationData location);
+}
+
+// Note: The ProximityIntentReceiver class from the Java code was not provided.
+// Its functionality (reacting to proximity alerts) has been integrated into
+// the _checkProximity method in the _DistanceScreenState class.
+```
+

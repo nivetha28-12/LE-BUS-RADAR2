@@ -1,0 +1,103 @@
+```dart
+// Required dependencies:
+// flutter:
+//   sdk: flutter
+//
+// Add the following to your pubspec.yaml under the flutter: section:
+// fonts:
+//   - family: MetelFont
+//     fonts:
+//       - asset: assets/fonts/metel.ttf
+// Make sure the font file 'metel.ttf' exists in the 'assets/fonts/' directory.
+
+import 'package:flutter/material.dart';
+import 'dart:async'; // Required for Timer
+
+// Placeholder for the OptionActivity equivalent screen
+// You need to create this screen separately.
+class OptionScreen extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Option Screen'),
+      ),
+      body: Center(
+        child: Text('This is the Option Screen'),
+      ),
+    );
+  }
+}
+
+
+// Represents the MainActivity class from Android
+class MainActivity extends StatefulWidget {
+  @override
+  _MainActivityState createState() => _MainActivityState();
+}
+
+class _MainActivityState extends State<MainActivity> {
+  // TextView met; // In Flutter, widgets are declared in the build method or as members if needed across builds
+
+  @override
+  void initState() {
+    super.initState(); // Equivalent to super.onCreate() call at the beginning
+
+    // The logic equivalent to Handler().postDelayed
+    Timer(Duration(seconds: 5), () {
+      // Equivalent to Intent i = new Intent( MainActivity.this,OptionActivity.class );
+      // Equivalent to startActivity( i );
+      if (mounted) { // Check if the widget is still in the tree
+         Navigator.pushReplacement( // Use pushReplacement if you don't want to return to MainActivity
+           context,
+           MaterialPageRoute(builder: (context) => OptionScreen()),
+         );
+         // Alternatively, use push if you want to be able to navigate back:
+         // Navigator.push(
+         //   context,
+         //   MaterialPageRoute(builder: (context) => OptionScreen()),
+         // );
+      }
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Equivalent to setContentView( R.layout.activity_main );
+    // The layout is defined here using Flutter widgets.
+    // We assume activity_main.xml had a TextView with id R.id.metel
+    return Scaffold(
+      // AppBar is optional, add if your original layout had one
+      // appBar: AppBar(
+      //   title: Text("Main Activity"),
+      // ),
+      body: Center( // Assuming the TextView was centered or the main content
+        child: Text(
+          // This text would typically come from the XML layout (android:text)
+          // or be set dynamically. Using a placeholder here.
+          "Metel Text Placeholder", // Placeholder text
+          // Equivalent to finding the TextView and setting the typeface
+          // met = (TextView)findViewById( R.id.metel );
+          // String ss = "fonts/metel.ttf";
+          // Typeface tc = Typeface.createFromAsset( getAssets(),ss );
+          // met.setTypeface( tc );
+          style: TextStyle(
+            fontFamily: 'MetelFont', // Use the family name defined in pubspec.yaml
+            // Add other text styling as needed (fontSize, color, etc.)
+            fontSize: 24,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// Example main function to run the app
+// void main() {
+//   runApp(MaterialApp(
+//     home: MainActivity(),
+//   ));
+// }
+
+```
+

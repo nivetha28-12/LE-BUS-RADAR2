@@ -1,0 +1,355 @@
+```dart
+// Required Dependencies:
+// location: ^5.0.3 (or latest)
+// flutter:
+//   sdk: flutter
+// app_settings: ^5.1.1 (or latest)
+// Add these to your pubspec.yaml file
+
+import 'dart:async'; // Required for StreamSubscription
+import 'package:flutter/material.dart'; // Required for BuildContext, AlertDialog, WidgetsFlutterBinding
+import 'package:location/location.dart'; // Flutter location plugin
+import 'package:app_settings/app_settings.dart'; // For opening settings
+// import 'package:flutter/services.dart'; // Potentially needed for platform exceptions, though covered by location plugin
+
+// Note: The original Java code extends Service and implements LocationListener.
+// Dart does not have a direct 'Service' equivalent for background execution in this context.
+// This translation provides a Dart class with similar functionality but without the Android Service lifecycle.
+// Location listening is handled via Streams provided by the 'location' package.
+class GPSTracker {
+  // BuildContext is required for showing the dialog. It must be supplied when calling showSettingsAlert.
+  // It's not stored as a member variable to avoid issues with context lifecycle.
+
+  // flag for GPS status - In Dart, we check if location service is enabled overall.
+  bool isServiceEnabled = false;
+
+  // flag for network status - Combined into isServiceEnabled with the location package.
+  // bool isNetworkEnabled = false; // Not directly mapped, covered by isServiceEnabled
+
+  // flag for GPS status permission - Renamed for clarity in Dart context
+  bool hasPermission = false;
+
+  // flag for whether location can be obtained
+  bool canGetLocation = false;
+
+  LocationData? locationData; // location data object from the 'location' package
+  double latitude = 0.0; // latitude
+  double longitude = 0.0; // longitude
+
+  // The minimum distance to change Updates in meters
+  // Note: The 'location' package uses distanceFilter for this.
+  static const double MIN_DISTANCE_CHANGE_FOR_UPDATES = 10; // 10 meters
+
+  // The minimum time between updates in milliseconds
+  // Note: The 'location' package uses interval and accuracy settings, not a direct minTime.
+  // This value is not directly used by the 'location' package's requestLocationUpdates equivalent.
+  // We will set the distance filter. Interval is managed differently.
+  static const int MIN_TIME_BW_UPDATES = 1000 * 60 * 1; // 1 minute (Used for reference, not direct application)
+
+  // Declaring a Location Manager equivalent
+  late Location _locationManager; // Instance of the location plugin
+  StreamSubscription<LocationData>? _locationSubscription; // To manage the location stream
+
+  // Constructor
+  GPSTracker() {
+    _locationManager = Location();
+    // Call getLocation asynchronously from the constructor.
+    // Note: It's generally better practice in Dart to have an explicit async init method,
+    // but this mimics the original Java constructor calling getLocation.
+    getLocation();
+  }
+
+  // Asynchronous method to get location
+  Future<LocationData?> getLocation() async {
+    try {
+      // Check if location service is enabled.
+      isServiceEnabled = await _locationManager.serviceEnabled();
+      if (!isServiceEnabled) {
+        // Location services are not enabled, request service.
+        isServiceEnabled = await _locationManager.requestService();
+        if (!isServiceEnabled) {
+          // Service not enabled after request, cannot get location.
+          this.canGetLocation = false;
+          return null;
+        }
+      }
+
+      // Check for location permissions.
+      PermissionStatus permissionStatus = await _locationManager.hasPermission();
+      if (permissionStatus == PermissionStatus.denied) {
+        // Permissions are denied, request permissions.
+        permissionStatus = await _locationManager.requestPermission();
+        if (permissionStatus != PermissionStatus.granted) {
+          // Permissions not granted after request, cannot get location.
+          this.hasPermission = false;
+          this.canGetLocation = false;
+          return null;
+        }
+      }
+
+      this.hasPermission = true;
+      this.canGetLocation = true; // Service is enabled and permission granted
+
+      // Configure location updates settings
+      // Note: The 'location' package applies settings globally or per stream subscription.
+      // Setting distance filter here. Interval/accuracy are often managed via LocationAccuracy.
+      await _locationManager.changeSettings(
+        // accuracy: LocationAccuracy.high, // Example: Set accuracy if needed
+        // interval: MIN_TIME_BW_UPDATES, // Not directly supported like Android's minTime
+        distanceFilter: MIN_DISTANCE_CHANGE_FOR_UPDATES,
+      );
+
+      // First get the last known location (or current location if no last known)
+      locationData = await _locationManager.getLocation();
+      if (locationData != null) {
+        latitude = locationData!.latitude!;
+        longitude = locationData!.longitude!;
+        // print("Initial Location: Lat: $latitude, Lon: $longitude"); // For debugging
+      }
+
+      // Start listening for location updates
+      // Cancel any existing subscription before starting a new one
+      await _locationSubscription?.cancel();
+      _locationSubscription =
+          _locationManager.onLocationChanged.listen((LocationData currentLocation) {
+        // This callback is the equivalent of Java's onLocationChanged
+        // print("Location Update: Lat: ${currentLocation.latitude}, Lon: ${currentLocation.longitude}"); // For debugging
+        locationData = currentLocation;
+        if (locationData != null) {
+          latitude = locationData!.latitude!;
+          longitude = locationData!.longitude!;
+        }
+        // Call the mirrored empty method for structural similarity
+        onLocationChanged(currentLocation);
+      });
+
+    } catch (e) {
+      // Handle potential exceptions (e.g., platform exceptions)
+      print("Error getting location: $e");
+      this.canGetLocation = false; // Ensure flag is false on error
+      // e.printStackTrace(); // Dart equivalent: print stack trace
+      // Consider more specific error handling if needed
+    }
+
+    return locationData;
+  }
+
+  /**
+     * Stop using GPS listener
+     * Calling this function will stop using GPS in your app
+     * */
+  Future<void> stopUsingGPS() async {
+    await _locationSubscription?.cancel();
+    _locationSubscription = null; // Clear the subscription reference
+    // print("GPS listener stopped."); // For debugging
+  }
+
+  /**
+     * Function to get latitude
+     * */
+  double getLatitude() {
+    if (locationData != null) {
+      latitude = locationData!.latitude!;
+    }
+    // return latitude
+    return latitude;
+  }
+
+  /**
+     * Function to get longitude
+     * */
+  double getLongitude() {
+    if (locationData != null) {
+      longitude = locationData!.longitude!;
+    }
+    // return longitude
+    return longitude;
+  }
+
+  /**
+     * Function to check GPS/wifi enabled
+     * @return boolean
+     * */
+  // This now reflects if service is enabled AND permission is granted
+  bool canGetLocationStatus() {
+    // Update status before returning, as it might have changed
+    // Note: Calling async methods here isn't ideal for a simple getter.
+    // Consider updating canGetLocation within getLocation and the stream listener.
+    // For simplicity matching the original structure, we return the last known state.
+    return this.canGetLocation;
+  }
+
+  /**
+     * Function to show settings alert dialog
+     * On pressing Settings button will launch Settings Options
+     * Requires a BuildContext to show the dialog.
+     * */
+  void showSettingsAlert(BuildContext context) {
+    AlertDialog alert = AlertDialog(
+      title: Text("GPS settings"), // Setting Dialog Title
+      content: Text(
+          "GPS is not enabled. Do you want to go to settings menu?"), // Setting Dialog Message
+      actions: <Widget>[
+        TextButton(
+          child: Text("Settings"), // On pressing Settings button
+          onPressed: () {
+            Navigator.of(context).pop(); // Close the dialog first
+            AppSettings.openLocationSettings(); // Open location settings using app_settings package
+          },
+        ),
+        TextButton(
+          child: Text("Cancel"), // on pressing cancel button
+          onPressed: () {
+            Navigator.of(context).pop(); // Close the dialog
+          },
+        ),
+      ],
+    );
+
+    // Showing Alert Message
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return alert;
+      },
+    );
+  }
+
+  // --- Mimicking LocationListener methods ---
+  // These methods are part of the original Java interface implementation.
+  // In this Dart version using the 'location' package, updates are primarily
+  // handled by the StreamSubscription callback. These methods are provided
+  // for structural similarity but are not automatically called by the location package
+  // in the same way as the Android LocationListener interface methods.
+  // The onLocationChanged method *is* called manually from the stream listener above.
+
+  // @Override
+  void onLocationChanged(LocationData location) {
+    // Original Java method was empty.
+    // Kept empty here, actual update logic is in the stream listener.
+    // Manually called from the stream listener for structural parity if needed.
+    // print("Manual call to onLocationChanged (mirrored method)");
+  }
+
+  // @Override
+  void onProviderDisabled(String provider) {
+    // Original Java method was empty.
+    // The 'location' package handles service status changes via serviceEnabled() checks
+    // or potentially through stream errors, not a direct provider string callback.
+  }
+
+  // @Override
+  void onProviderEnabled(String provider) {
+    // Original Java method was empty.
+    // Similar to onProviderDisabled, handled via serviceEnabled() checks.
+  }
+
+  // @Override
+  void onStatusChanged(String provider, int status, /*Bundle*/ dynamic extras) {
+    // Original Java method was empty.
+    // Status changes are generally abstracted by the 'location' package.
+    // The 'status' and 'extras' parameters don't have direct equivalents here.
+  }
+
+  // @Override
+  // IBinder onBind(Intent arg0) {
+  //   return null;
+  // }
+  // onBind is specific to Android Services and has no direct equivalent here. Omitted.
+}
+
+// Example Usage (within a Flutter StatefulWidget or similar):
+/*
+class MyLocationWidget extends StatefulWidget {
+  @override
+  _MyLocationWidgetState createState() => _MyLocationWidgetState();
+}
+
+class _MyLocationWidgetState extends State<MyLocationWidget> {
+  late GPSTracker _gpsTracker;
+  String _locationInfo = 'Initializing...';
+  bool _needsSettingsDialog = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Ensure Flutter bindings are initialized for async operations in initState
+    WidgetsFlutterBinding.ensureInitialized();
+    _gpsTracker = GPSTracker();
+    _initializeLocation();
+  }
+
+  Future<void> _initializeLocation() async {
+    // It's better to call getLocation explicitly after construction
+    // await _gpsTracker.getLocation(); // Or let the constructor call it
+
+    // Wait a moment for initial location fetch potentially started in constructor
+    await Future.delayed(Duration(seconds: 1));
+
+    setState(() {
+      if (_gpsTracker.canGetLocationStatus()) {
+        _locationInfo = 'Lat: ${_gpsTracker.getLatitude()}, Lon: ${_gpsTracker.getLongitude()}';
+        // Optionally, listen for future updates if needed here,
+        // though GPSTracker handles internal listening.
+      } else {
+        _locationInfo = 'Location not available. Check settings.';
+        // Check if service is disabled vs permission denied
+        if (!_gpsTracker.isServiceEnabled) {
+           _needsSettingsDialog = true; // Flag to show dialog in build
+        } else if (!_gpsTracker.hasPermission) {
+           _locationInfo = 'Location permission denied.';
+           // Optionally guide user to app settings for permissions
+        }
+      }
+    });
+
+     // If needed, show settings dialog after initial check
+     if (_needsSettingsDialog && mounted) {
+       _gpsTracker.showSettingsAlert(context);
+     }
+  }
+
+
+  @override
+  void dispose() {
+    _gpsTracker.stopUsingGPS(); // Stop listening when the widget is disposed
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('GPS Tracker Example')),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(_locationInfo),
+            ElevatedButton(
+              onPressed: () async {
+                 // Manually refresh location info
+                 await _gpsTracker.getLocation(); // Re-check/fetch location
+                 setState(() {
+                   if (_gpsTracker.canGetLocationStatus()) {
+                     _locationInfo = 'Lat: ${_gpsTracker.getLatitude()}, Lon: ${_gpsTracker.getLongitude()}';
+                   } else {
+                      _locationInfo = 'Location not available. Check settings.';
+                       if (!_gpsTracker.isServiceEnabled) {
+                           _gpsTracker.showSettingsAlert(context);
+                       } else if (!_gpsTracker.hasPermission) {
+                          _locationInfo = 'Location permission denied.';
+                       }
+                   }
+                 });
+              },
+              child: Text('Refresh Location'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+*/
+```
+

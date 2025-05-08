@@ -1,0 +1,270 @@
+```dart
+// Required Dependencies:
+// Add these to your pubspec.yaml file:
+// dependencies:
+//   flutter:
+//     sdk: flutter
+//   http: ^1.2.1 # Use the latest version
+//   fluttertoast: ^8.2.6 # Use the latest version
+
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'package:fluttertoast/fluttertoast.dart';
+import 'dart:developer' as developer; // For logging
+
+// Placeholder for the Distance screen/activity
+class DistanceScreen extends StatelessWidget {
+  final String bus;
+
+  const DistanceScreen({Key? key, required this.bus}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Distance Screen'),
+      ),
+      body: Center(
+        child: Text('Details for Bus: $bus'),
+      ),
+    );
+  }
+}
+
+// Placeholder for R.layout.activity_main2 - represented by the Scaffold structure
+// Placeholder for R.id.spinner - represented by the DropdownButton key or variable
+// Placeholder for R.id.map - represented by the ElevatedButton key or variable (not strictly needed in Flutter)
+
+class Main2Activity extends StatefulWidget {
+  @override
+  _Main2ActivityState createState() => _Main2ActivityState();
+}
+
+class _Main2ActivityState extends State<Main2Activity> {
+  // Spinner sp1; -> Replaced by DropdownButton and its state variable _sp1Value
+  String? _sp1Value; // Holds the selected value for the dropdown
+  List<String> personList = <String>[]; // ArrayList<String> personList;
+  final String _tag =
+      "Main2Activity"; // private String TAG = Main2Activity.class.getSimpleName();
+
+  // private static String url; -> Defined where used or as a constant
+  static const String _url =
+      "http://192.168.1.20/busproject1/viewadsAll.php";
+  static const String _tagProductIds =
+      "busnumber"; // private static final String TAG_PRODUCTIDS ="busnumber";
+  String? ss; // String ss; - Selected item from dropdown
+
+  bool _isLoading = false; // To manage progress indicator state
+  String? _error; // To hold any error message
+
+  @override
+  void initState() {
+    super.initState(); // super.onCreate( savedInstanceState ); - Called implicitly
+    // setContentView( R.layout.activity_main2 ); -> Done by build method
+    // sp1 = (Spinner)findViewById( R.id.spinner ); -> Handled by DropdownButton widget
+    // personList = new ArrayList<String>(); -> Initialized above
+    // url = "http://192.168.1.20/busproject1/viewadsAll.php"; -> Defined as constant _url
+    _getallsoil(); // new getallsoil().execute();
+  }
+
+  // class getallsoil extends AsyncTask<Void, Void, Void> { ... } -> Replaced by async method _getallsoil
+  Future<void> _getallsoil() async {
+    // ProgressDialog dialog; -> Managed by _isLoading state
+    // @Override protected void onPreExecute() { ... }
+    setState(() {
+      _isLoading = true; // dialog = new ProgressDialog... dialog.show();
+      _error = null; // Reset error on new request
+    });
+
+    // @Override protected Void doInBackground(Void... params) { ... }
+    try {
+      // HttpHandler sh = new HttpHandler(); -> Using http package
+      // Making a request to url and getting response
+      // String jsonStr = sh.makeServiceCall(url);
+      final response = await http.get(Uri.parse(_url));
+
+      // Log.e(TAG, "Response from url: " + jsonStr);
+      developer.log("Response from url: ${response.body}", name: _tag);
+
+      if (response.statusCode == 200) {
+        final String jsonStr = response.body;
+        // if (jsonStr != null) { -> Check done by status code and try-catch
+        try {
+          final jsonObj = jsonDecode(jsonStr); // JSONObject jsonObj = new JSONObject(jsonStr);
+
+          // Getting JSON Array node
+          // JSONArray contacts = jsonObj.getJSONArray("result");
+          if (jsonObj.containsKey("result") && jsonObj["result"] is List) {
+             final List<dynamic> contacts = jsonObj["result"];
+
+             List<String> fetchedList = []; // Temporary list for fetched items
+
+            // looping through All Contacts
+            for (int i = 0; i < contacts.length; i++) {
+              // JSONObject c = contacts.getJSONObject(i);
+              if (contacts[i] is Map<String, dynamic>) {
+                 final Map<String, dynamic> c = contacts[i];
+
+                 if (c.containsKey(_tagProductIds)) {
+                    final String productids = c[_tagProductIds]
+                        .toString(); // String productids = c.getString(TAG_PRODUCTIDS);
+
+                    // personList.add(productids);
+                    fetchedList.add(productids);
+                 } else {
+                    developer.log("Key '$_tagProductIds' not found in item $i", name: _tag);
+                 }
+              } else {
+                 developer.log("Item $i is not a valid JSON object", name: _tag);
+              }
+            }
+             // @Override protected void onPostExecute(Void result) { ... }
+             setState(() {
+                personList = fetchedList; // Update the main list
+                // Reset selection if the list is updated
+                if (personList.isNotEmpty && !personList.contains(_sp1Value)) {
+                    _sp1Value = null; // Or set to the first item: personList.first;
+                } else if (personList.isEmpty) {
+                    _sp1Value = null;
+                }
+                // The rest of onPostExecute logic (adapter setup, listener) is handled by the build method reacting to state changes.
+             });
+
+          } else {
+             throw Exception("JSON response does not contain 'result' list.");
+          }
+
+
+        } catch (e) { // } catch (final JSONException e) {
+          developer.log("Json parsing error: ${e.toString()}", name: _tag); // Log.e(TAG, "Json parsing error: " + e.getMessage());
+          // runOnUiThread(new Runnable() { ... }); -> Use setState to update UI
+          setState(() {
+              _error = "Json parsing error: ${e.toString()}";
+          });
+          // Toast.makeText(getApplicationContext(), "Json parsing error: " + e.getMessage(), Toast.LENGTH_LONG).show();
+          Fluttertoast.showToast(
+              msg: "Json parsing error: ${e.toString()}",
+              toastLength: Toast.LENGTH_LONG);
+        }
+      } else {
+        // Handle non-200 status code
+         developer.log("Couldn't get json from server. Status code: ${response.statusCode}", name: _tag);
+         setState(() {
+             _error = "Couldn't get json from server (Code: ${response.statusCode}). Check logs.";
+         });
+         Fluttertoast.showToast(
+             msg: "Couldn't get json from server. Check Log for possible errors!",
+             toastLength: Toast.LENGTH_LONG);
+      }
+    } catch (e) {
+      // } else { Log.e(TAG, "Couldn't get json from server."); ... } -> Catch network errors
+      developer.log("Couldn't get json from server: ${e.toString()}", name: _tag);
+      // runOnUiThread(new Runnable() { ... }); -> Use setState
+      setState(() {
+        _error = "Couldn't get json from server. Check connection or logs.";
+      });
+      Fluttertoast.showToast(
+          msg: "Couldn't get json from server. Check LogCat for possible errors!",
+          toastLength: Toast.LENGTH_LONG);
+    } finally {
+      // if (dialog.isShowing()) dialog.dismiss(); -> Handled by setting _isLoading
+      if (mounted) { // Check if the widget is still in the tree
+         setState(() {
+           _isLoading = false;
+         });
+      }
+    }
+    // return null; -> Implicit in void Future
+  }
+
+  // public void map(View v){ ... } -> Replaced by _navigateToDistance method triggered by button
+  void _navigateToDistance() {
+     if (ss != null) { // Check if an item is selected
+        String sss = ss!; // String sss = ss.toString(); (Ensure ss is not null)
+        // Intent i = new Intent( Main2Activity.this,Distance.class );
+        // i.putExtra( "bus",sss );
+        // startActivity( i );
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => DistanceScreen(bus: sss),
+          ),
+        );
+        // Toast.makeText( getApplicationContext(),sss,Toast.LENGTH_SHORT ).show();
+        Fluttertoast.showToast(msg: sss, toastLength: Toast.LENGTH_SHORT);
+     } else {
+        Fluttertoast.showToast(msg: "Please select a bus first", toastLength: Toast.LENGTH_SHORT);
+     }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Bus Selection'),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            // Spinner equivalent
+            if (_isLoading)
+              Center(child: CircularProgressIndicator()) // ProgressDialog equivalent
+            else if (_error != null)
+              Center(child: Text('Error: $_error', style: TextStyle(color: Colors.red)))
+            else if (personList.isEmpty && !_isLoading)
+               Center(child: Text('No bus numbers found.'))
+            else
+              DropdownButton<String>(
+                // sp1 = (Spinner)findViewById( R.id.spinner );
+                value: _sp1Value,
+                isExpanded: true,
+                hint: Text('Select Bus Number'),
+                // ArrayAdapter<String> adapter = new ArrayAdapter<String>( Main2Activity.this, android.R.layout.simple_dropdown_item_1line, personList);
+                // sp1.setAdapter( adapter );
+                items: personList.map<DropdownMenuItem<String>>((String value) {
+                  return DropdownMenuItem<String>(
+                    value: value,
+                    child: Text(value),
+                  );
+                }).toList(),
+                // sp1.setOnItemSelectedListener( new AdapterView.OnItemSelectedListener() { ... } );
+                onChanged: (String? newValue) {
+                  setState(() {
+                    _sp1Value = newValue;
+                    // @Override public void onItemSelected(...)
+                    ss = newValue; // ss = (String) parent.getItemAtPosition( position );
+                    if (ss != null) {
+                       Fluttertoast.showToast(
+                           msg: "$ss", toastLength: Toast.LENGTH_SHORT); // Toast.makeText( Main2Activity.this,""+ss,Toast.LENGTH_SHORT ).show();
+                    }
+                    /*   Intent i =  new Intent( Main2Activity.this,Distance.class );
+                         i.putExtra( "bus",ss );
+                         startActivity( i );*/ // This navigation happens on button press now
+                  });
+                },
+                // @Override public void onNothingSelected(AdapterView<?> parent) { } -> Implicitly handled
+              ),
+
+            SizedBox(height: 20), // Spacing
+
+            // Button to trigger navigation (equivalent to the implicit map button)
+            ElevatedButton(
+              // Corresponds to the View triggering the map(View v) method
+              onPressed: _navigateToDistance, // Calls the equivalent of the map method
+              child: Text('Show Distance Info'), // Button text, assuming 'map' was a button
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// Helper class HttpHandler is not needed as we use the standard 'http' package.
+// If HttpHandler had custom logic (e.g., specific headers, error handling),
+// that logic would need to be replicated in the _getallsoil method using the http package.
+```
+

@@ -1,0 +1,306 @@
+```dart
+// Required Dependencies:
+// Add these to your pubspec.yaml file:
+// dependencies:
+//   flutter:
+//     sdk: flutter
+//   http: ^1.2.1 # Use the latest version
+//   shared_preferences: ^2.2.3 # Use the latest version
+//   flutter_easyloading: ^3.0.5 # Optional: for a loading indicator similar to ProgressDialog
+
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert'; // Needed for jsonDecode if the server responds with JSON, though not strictly needed for 'success' string comparison
+import 'package:flutter_easyloading/flutter_easyloading.dart'; // Optional loading indicator
+
+// Placeholder for the BusProfile screen - REQUIRED for navigation to work
+class BusProfile extends StatelessWidget {
+  final String busno;
+
+  const BusProfile({Key? key, required this.busno}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Bus Profile'),
+      ),
+      body: Center(
+        child: Text('Bus Profile Screen for Bus No: $busno'),
+      ),
+    );
+  }
+}
+
+
+// Main application setup (for running the example)
+void main() {
+  runApp(MyApp());
+  // Configure EasyLoading (optional)
+  configLoading();
+}
+
+// Optional EasyLoading configuration
+void configLoading() {
+  EasyLoading.instance
+    ..displayDuration = const Duration(milliseconds: 2000)
+    ..indicatorType = EasyLoadingIndicatorType.fadingCircle
+    ..loadingStyle = EasyLoadingStyle.dark
+    ..indicatorSize = 45.0
+    ..radius = 10.0
+    ..progressColor = Colors.yellow
+    ..backgroundColor = Colors.green
+    ..indicatorColor = Colors.yellow
+    ..textColor = Colors.yellow
+    ..maskColor = Colors.blue.withOpacity(0.5)
+    ..userInteractions = false // Prevent interactions while loading
+    ..dismissOnTap = false;
+}
+
+
+class MyApp extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Bus Tracking Login',
+      home: LoginActivity(),
+      builder: EasyLoading.init(), // Initialize EasyLoading (optional)
+    );
+  }
+}
+
+
+// Translated LoginActivity class
+class LoginActivity extends StatefulWidget {
+  @override
+  _LoginActivityState createState() => _LoginActivityState();
+}
+
+class _LoginActivityState extends State<LoginActivity> {
+  // EditText username,drivermname; -> TextEditingControllers
+  final TextEditingController _usernameController = TextEditingController();
+  final TextEditingController _drivermnameController = TextEditingController();
+  // Button busstartt; -> Represented by ElevatedButton
+
+  // Constants
+  static const String REGISTER_URL = "http://192.168.1.20/busproject1/loginuser.php";
+  final String KEY_NAME = "busnumber"; // Corresponds to username field in UI
+  final String KEY_USERNAME = "drivername"; // Corresponds to drivermname field in UI
+
+  // SharedPreferences sp;
+  SharedPreferences? sp; // Use nullable type
+
+  // Flag to manage loading state (alternative to ProgressDialog)
+  bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Initialize SharedPreferences
+    _initSharedPreferences();
+  }
+
+  // Helper method to initialize SharedPreferences asynchronously
+  Future<void> _initSharedPreferences() async {
+    // sp = getSharedPreferences( "driver", Context.MODE_PRIVATE ); -> Equivalent in Flutter
+    sp = await SharedPreferences.getInstance();
+  }
+
+  @override
+  void dispose() {
+    // Dispose controllers when the widget is removed from the widget tree
+    _usernameController.dispose();
+    _drivermnameController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // super.onCreate( savedInstanceState ); -> Handled by Flutter framework
+    // setContentView( R.layout.activity_login ); -> Replaced by Scaffold and Widgets
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text("Driver Login"),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: <Widget>[
+            // username = (EditText)findViewById( R.id.loginusername );
+            TextField(
+              controller: _usernameController,
+              decoration: InputDecoration(
+                labelText: "Bus Number", // Label reflects KEY_NAME
+                hintText: "Enter Bus Number",
+                border: OutlineInputBorder(),
+              ),
+              keyboardType: TextInputType.text, // Adjust keyboard type if needed
+            ),
+            SizedBox(height: 16.0), // Spacing
+
+            // drivermname = (EditText)findViewById( R.id.loginpass );
+            TextField(
+              controller: _drivermnameController,
+              decoration: InputDecoration(
+                labelText: "Driver Name", // Label reflects KEY_USERNAME
+                hintText: "Enter Driver Name",
+                border: OutlineInputBorder(),
+              ),
+              obscureText: false, // Set to true if it were a password
+              keyboardType: TextInputType.text,
+            ),
+            SizedBox(height: 24.0), // Spacing
+
+            // busstartt = (Button)findViewById( R.id.loginButton );
+            // busstartt.setOnClickListener( new View.OnClickListener() { ... } );
+            ElevatedButton(
+              // Disable button while loading
+              onPressed: _isLoading ? null : _loginUser,
+              child: _isLoading
+                  ? SizedBox( // Show progress indicator inside button when loading
+                      height: 20.0,
+                      width: 20.0,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.0,
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                      ),
+                    )
+                  : Text("Login"),
+              style: ElevatedButton.styleFrom(
+                minimumSize: Size(double.infinity, 48), // Make button wider
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // private void LoginUser(){
+  Future<void> _loginUser() async {
+    // Get text from controllers
+    // final String busno1 = username.getText().toString();
+    final String busno1 = _usernameController.text.trim();
+    // final String drivarname1 = drivermname.getText().toString();
+    final String drivarname1 = _drivermnameController.text.trim();
+
+    // Basic validation
+    if (busno1.isEmpty || drivarname1.isEmpty) {
+       // Showing toast
+       ScaffoldMessenger.of(context).showSnackBar(
+         SnackBar(content: Text('Please enter both Bus Number and Driver Name')),
+       );
+       return;
+    }
+
+
+    // Showing the progress dialog
+    // final ProgressDialog loading = ProgressDialog.show(this,"Uploading...","Please wait...",false,false);
+    // Using state variable and conditional UI instead
+    // Or using FlutterEasyLoading (optional)
+    setState(() {
+      _isLoading = true;
+    });
+    // Optional: Show EasyLoading indicator
+    EasyLoading.show(status: 'Logging In...', maskType: EasyLoadingMaskType.black);
+
+
+    // StringRequest stringRequest = new StringRequest( Request.Method.POST, REGISTER_URL, ... );
+    // Creating a Request Queue & Adding request -> Handled by http package
+
+    try {
+      // Make the POST request
+      final response = await http.post(
+        Uri.parse(REGISTER_URL),
+        // @Override protected Map<String, String> getParams() throws AuthFailureError { ... }
+        body: {
+          // params.put(KEY_NAME, busno1);
+          KEY_NAME: busno1,
+          // params.put(KEY_USERNAME, drivarname1);
+          KEY_USERNAME: drivarname1,
+        },
+      );
+
+      // Handle the response
+      // new Response.Listener<String>() { @Override public void onResponse(String s) { ... } }
+      if (response.statusCode == 200) {
+        String s = response.body.trim(); // Get response body
+
+        // Disimissing the progress dialog -> Handled in finally block or here
+        // loading.dismiss(); -> Handled below
+
+        if (s.toLowerCase() == "success") { // Case-insensitive comparison like equalsIgnoreCase
+          // String number  = busno1.toString(); -> Already a string
+          // sp.edit().putString( "username",number ).commit(); -> Use await for async operation
+          await sp?.setString("username", busno1); // Save bus number as 'username' in prefs
+
+          // Intent i=  new Intent( LoginActivity.this,BusProfile.class );
+          // i.putExtra( "busno", number);
+          // startActivity( i );
+          // Use Navigator to push the new screen
+          // Ensure BusProfile screen exists and accepts 'busno'
+          if (mounted) { // Check if the widget is still in the tree
+             Navigator.pushReplacement( // Use pushReplacement if you don't want to return to Login
+               context,
+               MaterialPageRoute(
+                 builder: (context) => BusProfile(busno: busno1),
+               ),
+             );
+          }
+
+        } else {
+          // Toast.makeText(LoginActivity.this, "Login Failed" , Toast.LENGTH_LONG).show();
+          if (mounted) {
+             ScaffoldMessenger.of(context).showSnackBar(
+               SnackBar(content: Text('Login Failed: Server response - $s')),
+             );
+          }
+        }
+        // Showing toast message of the response (Original code showed it regardless of success/fail)
+        // Toast.makeText(LoginActivity.this, s , Toast.LENGTH_LONG).show();
+         if (mounted) {
+             ScaffoldMessenger.of(context).showSnackBar(
+               SnackBar(content: Text('Server Response: $s')),
+             );
+         }
+
+      } else {
+        // Handle non-200 status codes (like server errors)
+        // Dismissing the progress dialog -> Handled in finally block
+        // Showing toast
+        if (mounted) {
+           ScaffoldMessenger.of(context).showSnackBar(
+             SnackBar(content: Text('Error: ${response.statusCode} - ${response.reasonPhrase}')),
+           );
+        }
+      }
+    }
+    // new Response.ErrorListener() { @Override public void onErrorResponse(VolleyError volleyError) { ... } }
+    catch (e) {
+      // Handle network errors or other exceptions during the request
+      // Dismissing the progress dialog -> Handled in finally block
+      // loading.dismiss();
+
+      // Showing toast
+      // Toast.makeText(LoginActivity.this, volleyError.getMessage().toString(), Toast.LENGTH_LONG).show();
+       if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Network Error: ${e.toString()}')),
+          );
+       }
+    } finally {
+      // Ensure loading indicator is dismissed and state is reset
+      // loading.dismiss();
+      setState(() {
+        _isLoading = false;
+      });
+      // Optional: Dismiss EasyLoading
+      EasyLoading.dismiss();
+    }
+  }
+}
+```
+
